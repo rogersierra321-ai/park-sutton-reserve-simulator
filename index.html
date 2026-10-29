@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Interactive reserve fund and capital project planning tool for our condominium community.">
+<title>Capital Projects & Reserve Fund Simulator</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Source+Sans+3:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script>
+tailwind.config={theme:{extend:{
+  colors:{bg:'var(--bg)',sheet:'var(--sheet)',soft:'var(--soft)',ink:'var(--ink)',muted:'var(--muted)',rule:'var(--rule)',
+    accent:'var(--accent)',accentsoft:'var(--accentsoft)',spend:'var(--spend)',bad:'var(--bad)',badsoft:'var(--badsoft)',good:'var(--good)',goodsoft:'var(--goodsoft)',warn:'var(--warn)'},
+  fontFamily:{display:['"Barlow Condensed"','"Arial Narrow"','Arial','sans-serif'],sans:['"Source Sans 3"','"Segoe UI"','Helvetica','Arial','sans-serif'],mono:['"IBM Plex Mono"','ui-monospace','Menlo','Consolas','monospace']}
+}}};
+</script>
+<style>
+/* Layout: projector-first. Title band, plain-English headline, KPI strip, then inputs column + charts column. Copper = money going out, teal = money coming in. */
+:root{
+  --bg:#eef2f4; --sheet:#ffffff; --soft:#f4f7f8; --ink:#13202a; --muted:#4f5e68; --rule:#d2dbe0;
+  --accent:#0f6c7a; --accentsoft:#d9edf0; --spend:#b06f30;
+  --bad:#bf3328; --badsoft:#f8e1de; --good:#2a7a45; --goodsoft:#dcefe2; --warn:#a26a06;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0d151a; --sheet:#152129; --soft:#1b2a33; --ink:#e6edf1; --muted:#9db0ba; --rule:#2b3c46;
+  --accent:#4fb8c6; --accentsoft:#173b42; --spend:#d79b5c;
+  --bad:#f2735f; --badsoft:#3f201b; --good:#5fc786; --goodsoft:#173726; --warn:#e8b23f; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0d151a; --sheet:#152129; --soft:#1b2a33; --ink:#e6edf1; --muted:#9db0ba; --rule:#2b3c46;
+  --accent:#4fb8c6; --accentsoft:#173b42; --spend:#d79b5c;
+  --bad:#f2735f; --badsoft:#3f201b; --good:#5fc786; --goodsoft:#173726; --warn:#e8b23f; color-scheme:dark}
+html{font-size:17px}
+body{background:var(--bg);color:var(--ink);font-family:"Source Sans 3","Segoe UI",Helvetica,Arial,sans-serif}
+.gutter{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.tnum{font-variant-numeric:tabular-nums}
+h1,h2,h3{text-wrap:balance}
+.eyebrow{font-size:.74rem;text-transform:uppercase;letter-spacing:.09em;font-weight:700;color:var(--muted)}
+input[type=range]{accent-color:var(--accent);width:100%}
+input,select,button{font:inherit;color:inherit}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.num-in{font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums;background:var(--soft);border:1px solid var(--rule);border-radius:4px;padding:4px 8px;text-align:right}
+.g-bar{color:#fff;text-shadow:0 1px 1px rgba(0,0,0,.35)}
+details>summary{cursor:pointer;list-style:none}
+details>summary::-webkit-details-marker{display:none}
+details[open] .chev{transform:rotate(90deg)}
+.chev{display:inline-block;transition:transform .15s}
+@media (prefers-reduced-motion:reduce){.chev{transition:none}}
+.recharts-text{font-family:"IBM Plex Mono",monospace}
+</style>
+
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
+<script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/htm@3.1.1/dist/htm.umd.js"></script>
+<script>
+const {useState,useMemo,useEffect}=React;
+const html=htm.bind(React.createElement);
+const {ResponsiveContainer,ComposedChart,LineChart,Bar,Line,XAxis,YAxis,CartesianGrid,Tooltip,Legend,ReferenceLine}=Recharts;
+const Y0=2027;
+
+/* ---------- formatting ---------- */
+const money=v=>{const s='$'+Math.round(Math.abs(v)).toLocaleString('en-US');return v<-0.5?'('+s+')':s;};
+const short=v=>{const a=Math.abs(v);let s;
+  if(a>=1e6)s='$'+(a/1e6).toFixed(a>=1e7?1:2)+'M';else if(a>=1e3)s='$'+Math.round(a/1e3)+'K';else s='$'+Math.round(a);
+  return v<-0.5?'('+s+')':s;};
+const pct=v=>(+(v*100).toFixed(1))+'%';
+const range=(a,b)=>Array.from({length:b-a+1},(_,i)=>a+i);
+let _u=0;const uid=()=>'x'+(++_u)+Math.random().toString(36).slice(2,6);
+
+/* ---------- defaults ---------- */
+const SPR_CALC={units:226,perUnit:12500,floors:13,perFloor:40000,soft:0.10,cont:0.10};
+const calcBase=c=>Math.round((c.units*c.perUnit+c.floors*c.perFloor)*(1+c.soft)*(1+c.cont)*100)/100;
+const DEFAULT_INPUTS={start:3829679,reg:650000,dom:250000,inc:0.05,esc:0.05,min:600000,minInc:0.05,rate:0.035,moco:4000000,endYear:2041};
+const mkProj=(name,base,basis,start,phases,color,calc)=>({id:uid(),name,base,basis,start,phases,color,calc:calc?{...calc}:null});
+const fire=()=>({...mkProj('Fire Protection System Upgrade',1197770,2027,2027,1,'#d0443a'),locked:true});
+const spr=(s,n)=>({...mkProj('Sprinkler Upgrade (required by law)',calcBase(SPR_CALC),2026,s,n,'#e08a2e',SPR_CALC),locked:true});
+const dom=(s,n)=>({...mkProj('Riser Project',4700000,2026,s,n,'#2f74c0'),locked:true,note:'Base cost from Sage Contractor proposal (2025)'});
+const hvac=(s,n)=>({...mkProj('HVAC Pipe Project',4000000,2026,s,n,'#3a9e6c'),locked:true});
+const defaultPlan=()=>({inputs:{...DEFAULT_INPUTS},boost:{amount:0,year:2028,mode:'recurring'},projects:[fire(),spr(2028,2),dom(2033,2),hvac(2038,2),mkProj('Elevators (New Hoists Only)',0,2026,2027,1,'#7a5bb5'),mkProj('Balconies Maintenance',0,2026,2027,1,'#a0527a')]});
+
+/* ---------- model ---------- */
+function model(sc){
+  const I=sc.inputs,Bo=sc.boost,years=range(Y0,I.endYear),N=years.length;
+  const phases=[];
+  sc.projects.forEach(p=>{const n=Math.max(1,Math.round(p.phases)||1);
+    for(let k=0;k<n;k++){const y=p.start+k;phases.push({pid:p.id,name:p.name,color:p.color,k:k+1,n,y,cost:(p.base*Math.pow(1+I.esc,Math.max(0,p.start-p.basis-1)))/n,inH:y>=Y0&&y<=I.endYear});}});
+  const rows=[];let bal=I.start;
+  years.forEach((y,i)=>{
+    const g=Math.pow(1+I.inc,y-Y0),reg=I.reg*g,dm=I.dom*g;
+    const boost=Bo.amount>0&&(Bo.mode==='once'?y===Bo.year:y>=Bo.year)?Bo.amount:0;
+    const contrib=reg+dm+boost;
+    const exp=phases.filter(ph=>ph.y===y).reduce((a,ph)=>a+ph.cost,0);
+    const minReq=I.min*Math.pow(1+(I.minInc||0),y-Y0);
+    const interest=Math.max(0,bal-exp)*(I.rate||0);
+    const before=bal+interest+contrib-exp,alloc=Math.max(0,minReq-before),end=before+alloc;
+    rows.push({y,begin:bal,interest,reg,dom:dm,boost,contrib,exp,before,minReq,alloc,end,totalAlloc:contrib+alloc});bal=end;
+  });
+  rows.forEach((r,i)=>{let t=0;for(let k=Math.max(0,i-3);k<=i;k++)t+=rows[k].exp;r.rolling=t;r.flag=t>I.moco;});
+  const sum=f=>rows.reduce((a,r)=>a+f(r),0);
+  const totalSpend=sum(r=>r.exp),totalInterest=sum(r=>r.interest),level=(totalSpend+rows[N-1].minReq-I.start-totalInterest)/N;
+  let low=rows[0];rows.forEach(r=>{if(r.before<low.before)low=r;});
+  return {rows,phases,years,N,totalSpend,totalInterest,totalContrib:sum(r=>r.contrib),totalAddl:sum(r=>r.alloc),
+    level,incVs2027:level-(I.reg+I.dom),finalEnd:rows[N-1].end,mocoYears:rows.filter(r=>r.flag).map(r=>r.y),
+    low,outside:phases.filter(ph=>!ph.inH).length};
+}
+function mostly(rows){
+  let best=null,cur=null;
+  rows.forEach(r=>{if(r.alloc>0){if(!cur)cur={a:r.y,b:r.y,s:0};cur.b=r.y;cur.s+=r.alloc;}else cur=null;
+    if(cur&&(!best||cur.s>best.s))best={...cur};});
+  if(!best)return '';return best.a===best.b?'in '+best.a:'in '+best.a+'–'+best.b;
+}
+function headline(m,I){
+  const lines=[];
+  if(m.totalAddl>0){
+    lines.push(m.incVs2027>0
+      ?`This plan needs ${short(m.totalAddl)} in additional allocations, mostly ${mostly(m.rows)}, about ${short(m.incVs2027)} more per year than 2027.`
+      :`This plan needs ${short(m.totalAddl)} in additional allocations, mostly ${mostly(m.rows)}. A level allocation of ${short(m.level)} per year would cover it.`);
+  } else lines.push(`This plan keeps the reserve above the minimum balance every year with no additional allocations.`);
+  return lines;
+}
+
+/* ---------- theme colors for charts ---------- */
+function useTokens(){
+  const read=()=>{const cs=getComputedStyle(document.documentElement),g=k=>cs.getPropertyValue(k).trim();
+    return {ink:g('--ink'),muted:g('--muted'),rule:g('--rule'),accent:g('--accent'),spend:g('--spend'),bad:g('--bad'),sheet:g('--sheet'),warn:g('--warn')};};
+  const [t,setT]=useState(read);
+  useEffect(()=>{const mq=matchMedia('(prefers-color-scheme: dark)'),f=()=>setT(read());
+    mq.addEventListener('change',f);const mo=new MutationObserver(f);mo.observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+    return ()=>{mq.removeEventListener('change',f);mo.disconnect();};},[]);
+  return t;
+}
+
+/* ---------- small components ---------- */
+function Ctl({id,label,value,onChange,min,max,step,kind='money',hint}){
+  const disp=kind==='pct'?+(value*100).toFixed(2):Math.round(value);
+  const set=v=>{const n=parseFloat(v);if(!isNaN(n))onChange(kind==='pct'?n/100:n);};
+  return html`<div className="flex flex-col gap-1">
+    <div className="flex items-baseline justify-between gap-3">
+      <label htmlFor=${id} className="font-semibold leading-tight">${label}</label>
+      <div className="flex items-center gap-1">${kind==='money'&&html`<span className="text-muted">$</span>`}
+        <input id=${id} type="number" className=${'num-in '+(kind==='money'?'w-32':'w-20')} value=${disp} step=${kind==='pct'?0.5:step} onChange=${e=>set(e.target.value)}/>
+        ${kind==='pct'&&html`<span className="text-muted">%</span>`}</div>
+    </div>
+    <input type="range" aria-label=${label} min=${kind==='pct'?min*100:min} max=${kind==='pct'?max*100:max} step=${kind==='pct'?0.5:step} value=${disp} onChange=${e=>set(e.target.value)}/>
+    ${hint&&html`<span className="text-sm text-muted">${hint}</span>`}
+  </div>`;
+}
+const Panel=({title,sub,right,children})=>html`<section className="bg-sheet border border-rule rounded-md p-5 flex flex-col gap-4 min-w-0">
+  ${(title||right)&&html`<div className="flex flex-wrap items-end justify-between gap-3"><div className="min-w-0">
+    ${title&&html`<h2 className="font-display text-[1.7rem] font-semibold leading-none">${title}</h2>`}
+    ${sub&&html`<p className="text-muted mt-1.5 max-w-[70ch]">${sub}</p>`}</div>${right}</div>`}
+  ${children}</section>`;
+
+function Kpis({m,I}){
+  const cards=[
+    {l:'Total project spend',v:short(m.totalSpend),s:'With construction cost escalation'},
+    {l:'Budgeted contributions',v:short(m.totalContrib),s:I.endYear-Y0+1+' years of regular + Riser special assessment'},
+    {l:'Interest earned',v:short(m.totalInterest),s:pct(I.rate)+' per year on the reserve balance',t:'good'},
+    {l:'Additional allocations',v:short(m.totalAddl),s:m.totalAddl>0?'Mostly '+mostly(m.rows):'None needed',t:m.totalAddl>0?'bad':'good'},
+    {l:'Level annual allocation',v:short(m.level),s:'Spreads all costs evenly'},
+    {l:'More per year than 2027',v:m.incVs2027>0?'+'+short(m.incVs2027):short(m.incVs2027),s:'vs. '+short(I.reg+I.dom)+' budgeted in 2027',t:m.incVs2027>0?'warn':'good'},
+    {l:'Ending balance '+I.endYear,v:short(m.finalEnd),s:'After any allocations'},
+    {l:'Lowest balance',v:short(m.low.before),s:'Before extra allocation, '+m.low.y,t:m.low.before<m.low.minReq?'bad':''},
+  ];
+  const tc={bad:'text-bad',good:'text-good',warn:'text-warn'};
+  return html`<div className="flex flex-wrap gap-px bg-rule border border-rule rounded-md overflow-hidden">
+    ${cards.map(c=>html`<div key=${c.l} className="bg-sheet p-4 flex flex-col gap-1 min-w-0 flex-[1_1_220px]">
+      <span className="eyebrow">${c.l}</span>
+      <span className=${'font-display font-semibold text-[2.4rem] leading-none tnum '+(tc[c.t]||'')}>${c.v}</span>
+      <span className="text-sm text-muted">${c.s}</span></div>`)}
+  </div>`;
+}
+
+function Gantt({m}){
+  const cols=m.N;
+  const grid={display:'grid',gridTemplateColumns:`minmax(200px,260px) repeat(${cols},minmax(62px,1fr))`};
+  const rows=m.phases.filter(ph=>ph.inH);
+  return html`<div className="overflow-x-auto"><div style=${{...grid,minWidth:200+cols*62}} className="text-[.95rem]">
+    <div></div>
+    ${m.years.map(y=>html`<div key=${y} className="text-center font-mono text-sm text-muted py-1 border-l border-rule">${y}</div>`)}
+    ${rows.map((ph,i)=>{const first=ph.k===1;return html`<${React.Fragment} key=${ph.pid+ph.k}>
+      <div className=${'flex items-center gap-2 pr-3 py-1 border-t '+(first?'border-ink':'border-rule')} title=${ph.name}>
+        <span className="w-3 h-3 rounded-sm flex-none" style=${{background:ph.color}}></span>
+        <span className="truncate">${first?ph.name:''}</span>
+        <span className="ml-auto text-sm text-muted whitespace-nowrap">${ph.n>1?'Ph '+ph.k+' of '+ph.n:''}</span></div>
+      ${m.years.map(y=>html`<div key=${y} className=${'border-l border-t p-1 '+(first?'border-t-ink border-l-rule':'border-rule')}>
+        ${y===ph.y&&html`<div className="g-bar rounded h-8 flex items-center justify-center font-mono text-[.8rem] font-semibold" style=${{background:ph.color}}>${short(ph.cost)}</div>`}</div>`)}
+    <//>`;})}
+  </div>
+  ${m.outside>0&&html`<p className="text-sm text-muted mt-2">${m.outside} ${m.outside===1?'phase falls':'phases fall'} after ${m.years[m.N-1]} and ${m.outside===1?'is':'are'} not counted. Extend the timeline to include ${m.outside===1?'it':'them'}.</p>`}
+  </div>`;
+}
+
+function ComboChart({m,I,tk,big}){
+  const fs=big?16:13;
+  const data=m.rows.map(r=>({year:r.y,Expenditures:Math.round(r.exp),Contributions:Math.round(r.contrib),'Ending balance':Math.round(r.end),Interest:Math.round(r.interest),Minimum:Math.round(r.minReq),alloc:r.alloc,before:r.before}));
+  const Dot=({cx,cy,payload,index})=>payload.alloc>0
+    ?html`<g key=${'d'+index}><circle cx=${cx} cy=${cy} r=${big?9:7} fill=${tk.bad} stroke=${tk.sheet} strokeWidth="2"/></g>`
+    :html`<circle key=${'d'+index} cx=${cx} cy=${cy} r=${big?5:4} fill=${tk.ink}/>`;
+  const Tip=({active,payload,label})=>{if(!active||!payload||!payload.length)return null;const p=payload[0].payload;
+    return html`<div className="bg-sheet border border-rule rounded p-3 text-sm shadow-lg font-mono tnum">
+      <div className="font-display text-lg font-semibold mb-1">${label}</div>
+      <div><span style=${{color:tk.spend}}>■</span> Spending ${money(p.Expenditures)}</div>
+      <div><span style=${{color:tk.accent}}>■</span> Contributions ${money(p.Contributions)}</div>
+      <div>Interest earned ${money(p.Interest)}</div>
+      <div>Ending balance ${money(p['Ending balance'])}</div>
+      <div className="text-muted">Minimum balance ${money(p.Minimum)}</div>
+      ${p.alloc>0&&html`<div className="text-bad font-semibold">Extra allocation needed ${money(p.alloc)}</div>`}</div>`;};
+  return html`<div style=${{height:big?470:390}}><${ResponsiveContainer} width="100%" height="100%">
+    <${ComposedChart} data=${data} margin=${{top:16,right:12,left:8,bottom:4}}>
+      <${CartesianGrid} stroke=${tk.rule} vertical=${false}/>
+      <${XAxis} dataKey="year" tick=${{fill:tk.muted,fontSize:fs}} stroke=${tk.rule} tickLine=${false}/>
+      <${YAxis} tickFormatter=${short} tick=${{fill:tk.muted,fontSize:fs}} stroke=${tk.rule} width=${big?84:70} tickLine=${false}/>
+      <${Tooltip} content=${html`<${Tip}/>`} cursor=${{fill:tk.rule,opacity:.35}}/>
+      <${Legend} wrapperStyle=${{fontSize:fs,color:tk.ink}}/>
+      <${Bar} dataKey="Expenditures" name="Project spending" fill=${tk.spend} radius=${[3,3,0,0]} isAnimationActive=${false}/>
+      <${Bar} dataKey="Contributions" name="Contributions" fill=${tk.accent} radius=${[3,3,0,0]} isAnimationActive=${false}/>
+      <${Line} type="linear" dataKey="Minimum" name="Minimum balance" stroke=${tk.muted} strokeDasharray="8 5" strokeWidth=${2} dot=${false} activeDot=${false} isAnimationActive=${false}/>
+      <${Line} type="linear" dataKey="Ending balance" name="Ending reserve balance" stroke=${tk.ink} strokeWidth=${big?4:3} dot=${Dot} activeDot=${false} isAnimationActive=${false}/>
+    <//>
+  <//></div>
+  <p className="text-sm text-muted">Red dots mark years that need an additional allocation to stay at the minimum balance.</p>`;
+}
+
+function Chips({m}){
+  return html`<div className="flex flex-wrap gap-2">${m.rows.map(r=>html`<div key=${r.y}
+    className=${'flex flex-col items-center px-3 py-1.5 rounded-md border '+(r.flag?'bg-badsoft border-bad text-bad':'bg-goodsoft border-good text-good')}
+    title=${r.y+': '+money(r.rolling)+' spent in the 4 years ending '+r.y}>
+    <span className="font-mono text-sm">${r.y}</span><span className="text-xs font-bold tracking-wider">${r.flag?'EXCEEDS':'OK'}</span></div>`)}</div>`;
+}
+
+/* ---------- app ---------- */
+function App(){
+  const tk=useTokens();
+  const [sc,setSc]=useState(defaultPlan);
+  const [pres,setPres]=useState(false);
+  const [confirmReset,setConfirmReset]=useState(false);
+  const [openCalc,setOpenCalc]=useState({});
+
+  const I=sc.inputs;
+  const m=useMemo(()=>model(sc),[sc]);
+  useEffect(()=>{document.documentElement.style.fontSize=pres?'21px':'17px';},[pres]);
+
+  const edit=fn=>setSc(s=>fn(s));
+  const setIn=k=>v=>edit(s=>({...s,inputs:{...s.inputs,[k]:v}}));
+  const setBoost=(k,v)=>edit(s=>({...s,boost:{...s.boost,[k]:v}}));
+  const updP=(id,patch)=>edit(s=>({...s,projects:s.projects.map(p=>p.id===id?{...p,...patch}:p)}));
+  const updCalc=(id,k,v)=>edit(s=>({...s,projects:s.projects.map(p=>{if(p.id!==id)return p;const c={...p.calc,[k]:v};return {...p,calc:c,base:calcBase(c)};})}));
+  const addP=()=>edit(s=>({...s,projects:[...s.projects,mkProj('New project',500000,2026,Math.min(2030,s.inputs.endYear),1,['#7a5bb5','#a0527a','#6b8a2a','#8a6d3b'][s.projects.length%4])]}));
+  const delP=id=>edit(s=>({...s,projects:s.projects.filter(p=>p.id!==id)}));
+  const reset=()=>{setSc(defaultPlan());setOpenCalc({});setConfirmReset(false);};
+
+  const lines=headline(m,I);
+  const years=range(Y0,I.endYear);
+
+  /* ---- presentation mode ---- */
+  if(pres) return html`<div className="gutter py-6 max-w-[1500px] mx-auto flex flex-col gap-6">
+    <div className="flex flex-wrap items-center justify-between gap-4">
+      <div><div className="eyebrow">Capital Projects & Reserve Fund</div>
+        <h1 className="font-display text-[2.6rem] font-bold leading-tight">${lines[0]}</h1>
+</div>
+      <div className="flex flex-wrap items-center gap-3">
+        <button onClick=${()=>setPres(false)} className="bg-ink text-sheet px-4 py-2 rounded font-semibold">Exit presentation</button></div>
+    </div>
+    <${Kpis} m=${m} I=${I}/>
+    <${Panel} title="Project schedule" sub="Each bar is one phase of work, labeled with its estimated cost in that year's dollars."><${Gantt} m=${m}/><//>
+    <${Panel} title="Reserve balance"><${ComboChart} m=${m} I=${I} tk=${tk} big=${true}/><//>
+  </div>`;
+
+  /* ---- normal mode ---- */
+  return html`<div className="gutter py-5 max-w-[1500px] mx-auto flex flex-col gap-5">
+    <header className="flex flex-wrap items-end justify-between gap-4 border-b-2 border-ink pb-4">
+      <div className="min-w-0">
+        <div className="eyebrow">Park Sutton · 1900 Lyttonsville Rd · 13-story condominium · 226 units · Silver Spring, MD</div>
+        <h1 className="font-display text-[2.4rem] sm:text-[2.9rem] font-bold leading-none uppercase tracking-wide">Capital Projects & Reserve Fund Simulator</h1>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        ${confirmReset?html`<span className="text-sm">Undo all changes and return to the starting numbers?</span>
+          <button onClick=${reset} className="bg-bad text-sheet px-3 py-2 rounded font-semibold">Reset</button>
+          <button onClick=${()=>setConfirmReset(false)} className="px-3 py-2 rounded border border-rule">Cancel</button>`
+        :html`<button onClick=${()=>setConfirmReset(true)} className="px-4 py-2 rounded border border-rule bg-sheet font-semibold">Reset to defaults</button>`}
+        <button onClick=${()=>setPres(true)} className="bg-accent text-sheet px-4 py-2 rounded font-semibold">Presentation mode</button>
+      </div>
+    </header>
+
+    <section aria-labelledby="about-h" className="bg-sheet border border-rule rounded-md px-5 py-4 flex flex-col gap-3">
+      <h2 id="about-h" className="eyebrow">About this simulator</h2>
+      <p className="text-lg max-w-[90ch]">This tool shows how our reserve fund could change from 2027 to ${I.endYear} as we pay for the building's major projects. Each year it adds the money we plan to contribute and the interest the reserve earns, subtracts the estimated project costs, and shows whether the reserve stays above the minimum balance (${short(I.min)} in 2027, rising ${pct(I.minInc)} per year). You can change any number below to see what happens.</p>
+      <div className="flex flex-col gap-1.5">
+        <span className="font-semibold">Important assumptions</span>
+        <ul className="list-disc pl-5 flex flex-col gap-1.5 max-w-[95ch]">
+          <li><b>The Sprinkler and HVAC costs are approximate.</b> They are based on similar projects in buildings like ours. The most reliable numbers will come from formal quotes or a cost estimate from a qualified expert.</li>
+          <li><b>Prices are locked for both phases.</b> We assume the contractor performing each project locks in its price for both phases, so the second phase costs the same as the first.</li>
+          <li><b>Construction costs are set to rise ${pct(I.esc)} per year</b> until the year each project starts. You can change this rate to see what happens.</li>
+          <li><b>Contributions are set to rise ${pct(I.inc)} per year.</b> You can change this rate to see what happens.</li>
+          <li><b>The reserve is set to earn ${pct(I.rate)} interest per year</b> on the beginning balance minus that year's project costs. You can change this rate to see what happens.</li>
+          <li><b>About the minimum balance:</b> A common rule of thumb in the industry is to keep about three months of operating costs in reserve. For our building that is roughly $600K, a reasonable number to plan around. Because operating costs go up over time, the minimum is set to rise ${pct(I.minInc)} per year, reaching about ${short(I.min*Math.pow(1+I.minInc,I.endYear-Y0))} by ${I.endYear}. You can change both the amount and the yearly increase in the inputs to see what happens.</li>
+          <li><b>Only major projects are included.</b> Smaller-dollar projects are not part of this simulation, but you can add them yourself with the “+ Add project” button.</li>
+          <li>This is a planning tool for discussion, not a reserve study.</li>
+        </ul>
+      </div>
+    </section>
+
+    <${Kpis} m=${m} I=${I}/>
+
+    <div className="grid gap-5 lg:grid-cols-[360px_minmax(0,1fr)] items-start">
+      <aside className="flex flex-col gap-5 lg:sticky lg:top-3">
+        <${Panel} title="Inputs">
+          <${Ctl} id="start" label="Reserve balance, end of 2026" value=${I.start} onChange=${setIn('start')} min=${0} max=${8000000} step=${10000}/>
+          <${Ctl} id="reg" label="2027 Regular Contribution" value=${I.reg} onChange=${setIn('reg')} min=${0} max=${2500000} step=${10000}/>
+          <${Ctl} id="dom" label="2027 Riser Project Special Assessment" value=${I.dom} onChange=${setIn('dom')} min=${0} max=${1500000} step=${10000}/>
+          <${Ctl} id="inc" label="Yearly contribution increase" value=${I.inc} onChange=${setIn('inc')} min=${0} max=${0.15} kind="pct" hint="Applied every year after 2027"/>
+          <${Ctl} id="rate" label="Yearly interest earned on reserve" value=${I.rate} onChange=${setIn('rate')} min=${0} max=${0.08} kind="pct" hint="Earned on the beginning balance minus that year's project costs"/>
+          <${Ctl} id="esc" label="Yearly construction cost increase" value=${I.esc} onChange=${setIn('esc')} min=${0} max=${0.10} kind="pct"/>
+          <${Ctl} id="min" label="Minimum reserve balance (2027)" value=${I.min} onChange=${setIn('min')} min=${0} max=${2000000} step=${25000}/>
+          <${Ctl} id="minInc" label="Yearly minimum balance increase" value=${I.minInc} onChange=${setIn('minInc')} min=${0} max=${0.10} kind="pct" hint=${'Reaches '+short(I.min*Math.pow(1+I.minInc,I.endYear-Y0))+' by '+I.endYear}/>
+          <${Ctl} id="end" label="Timeline end year" value=${I.endYear} onChange=${v=>setIn('endYear')(Math.max(2027,Math.min(2045,Math.round(v))))} min=${2030} max=${2045} step=${1} kind="year" hint=${'Showing 2027–'+I.endYear}/>
+        <//>
+        <${Panel} title="Contribution boost" sub="An extra amount added to the budgeted contributions.">
+          <${Ctl} id="boost" label="Boost amount" value=${sc.boost.amount} onChange=${v=>setBoost('amount',Math.max(0,v))} min=${0} max=${2000000} step=${10000}/>
+          <div className="flex flex-wrap gap-3 items-center">
+            <label htmlFor="byear" className="font-semibold">Starting</label>
+            <select id="byear" value=${sc.boost.year} onChange=${e=>setBoost('year',+e.target.value)} className="bg-soft border border-rule rounded px-2 py-1 font-mono">
+              ${years.map(y=>html`<option key=${y} value=${y}>${y}</option>`)}</select>
+            <select id="bmode" aria-label="Boost frequency" value=${sc.boost.mode} onChange=${e=>setBoost('mode',e.target.value)} className="bg-soft border border-rule rounded px-2 py-1">
+              <option value="once">One time only</option><option value="recurring">Every year after</option></select>
+          </div>
+          ${sc.boost.amount>0&&html`<span className="text-sm text-muted">About ${money(sc.boost.amount/226)} per unit${sc.boost.mode==='recurring'?' per year':''} if split evenly (before unit-share weighting).</span>`}
+        <//>
+      </aside>
+
+      <main className="flex flex-col gap-5 min-w-0">
+        <${Panel} title="Projects" sub="Each project's cost is escalated for the years between its cost basis year and its start year (the start year itself is not escalated), then split into equal phases, one per year."
+          right=${html`<button onClick=${addP} className="bg-accent text-sheet px-4 py-2 rounded font-semibold">+ Add project</button>`}>
+          <div className="overflow-x-auto"><table className="w-full text-left border-collapse min-w-[760px]">
+            <thead><tr className="border-b-2 border-ink">
+              ${['Color','Project','Base cost','Cost basis year','Start year','Phases','Total with escalation',''].map(h=>html`<th key=${h} className="eyebrow py-2 pr-3 font-bold">${h}</th>`)}</tr></thead>
+            <tbody>${sc.projects.map(p=>{const tot=m.phases.filter(ph=>ph.pid===p.id).reduce((a,ph)=>a+ph.cost,0);return html`<${React.Fragment} key=${p.id}>
+              <tr className="border-b border-rule">
+                <td className="py-2 pr-3"><input type="color" id=${'c'+p.id} aria-label="Project color" value=${p.color} onChange=${e=>updP(p.id,{color:e.target.value})} className="w-9 h-9 rounded cursor-pointer bg-transparent"/></td>
+                <td className="py-2 pr-3">${p.locked?html`<div className="font-semibold min-w-[220px] py-1">${p.name}</div>`:html`<input id=${'n'+p.id} aria-label="Project name" value=${p.name} onChange=${e=>updP(p.id,{name:e.target.value})} className="bg-soft border border-rule rounded px-2 py-1 w-full min-w-[220px]"/>`}
+                  ${p.note&&html`<div className="text-sm text-muted italic">${p.note}</div>`}
+                  ${p.calc&&html`<button onClick=${()=>setOpenCalc(o=>({...o,[p.id]:!o[p.id]}))} className="text-sm text-accent font-semibold mt-1">${openCalc[p.id]?'▾ Hide':'▸ Show'} cost calculator</button>`}</td>
+                <td className="py-2 pr-3"><input id=${'b'+p.id} type="number" aria-label="Base cost" step="1000" value=${p.base} onChange=${e=>updP(p.id,{base:Math.max(0,+e.target.value||0),calc:null})} className="num-in w-36"/></td>
+                <td className="py-2 pr-3"><input id=${'y'+p.id} type="number" aria-label="Cost basis year" value=${p.basis} onChange=${e=>updP(p.id,{basis:+e.target.value||2026})} className="num-in w-20"/></td>
+                <td className="py-2 pr-3"><select id=${'s'+p.id} aria-label="Start year" value=${p.start} onChange=${e=>updP(p.id,{start:+e.target.value})} className="bg-soft border border-rule rounded px-2 py-1 font-mono">
+                  ${years.map(y=>html`<option key=${y} value=${y}>${y}</option>`)}</select></td>
+                <td className="py-2 pr-3"><select id=${'p'+p.id} aria-label="Number of phases" value=${p.phases} onChange=${e=>updP(p.id,{phases:+e.target.value})} className="bg-soft border border-rule rounded px-2 py-1 font-mono">
+                  ${[1,2,3,4,5,6].map(n=>html`<option key=${n} value=${n}>${n}</option>`)}</select></td>
+                <td className="py-2 pr-3 font-mono tnum whitespace-nowrap">${money(tot)}</td>
+                <td className="py-2"><button onClick=${()=>delP(p.id)} aria-label=${'Delete '+p.name} title="Delete project" className="text-muted hover:text-bad text-xl px-2">×</button></td>
+              </tr>
+              ${p.calc&&openCalc[p.id]&&html`<tr className="border-b border-rule bg-soft"><td></td><td colSpan="7" className="py-3 pr-3">
+                <div className="flex flex-wrap gap-x-5 gap-y-2 items-center">
+                  ${[['units','Units',1],['perUnit','$ per unit',500],['floors','Floors',1],['perFloor','$ per floor',1000]].map(([k,l,st])=>html`<label key=${k} className="flex items-center gap-2"><span className="text-sm">${l}</span>
+                    <input type="number" id=${'k'+k+p.id} step=${st} value=${p.calc[k]} onChange=${e=>updCalc(p.id,k,+e.target.value||0)} className="num-in w-28"/></label>`)}
+                  ${[['soft','Soft costs'],['cont','Contingency']].map(([k,l])=>html`<label key=${k} className="flex items-center gap-2"><span className="text-sm">${l} %</span>
+                    <input type="number" id=${'k'+k+p.id} step="1" value=${+(p.calc[k]*100).toFixed(2)} onChange=${e=>updCalc(p.id,k,(+e.target.value||0)/100)} className="num-in w-20"/></label>`)}
+                </div>
+                <p className="font-mono text-sm mt-2 tnum">(${p.calc.units} × ${money(p.calc.perUnit)}) + (${p.calc.floors} × ${money(p.calc.perFloor)}) = ${money(p.calc.units*p.calc.perUnit+p.calc.floors*p.calc.perFloor)}
+                  → +${pct(p.calc.soft)} soft costs = ${money((p.calc.units*p.calc.perUnit+p.calc.floors*p.calc.perFloor)*(1+p.calc.soft))}
+                  → +${pct(p.calc.cont)} contingency = <b>${money(calcBase(p.calc))}</b></p>
+              </td></tr>`}
+            <//>`;})}</tbody></table></div>
+        <//>
+
+        <${Panel} title="Project schedule" sub="One row per phase. Each bar shows that phase's cost after escalation."><${Gantt} m=${m}/><//>
+        <${Panel} title="Spending, contributions and reserve balance"><${ComboChart} m=${m} I=${I} tk=${tk} big=${false}/><//>
+
+        <details className="bg-sheet border border-rule rounded-md">
+          <summary className="p-5 flex items-center gap-3"><span className="chev text-muted">▶</span>
+            <span className="font-display text-[1.7rem] font-semibold leading-none">Reserve schedule</span><span className="text-muted">Year-by-year detail</span></summary>
+          <div className="overflow-x-auto px-5 pb-5"><table className="w-full border-collapse font-mono tnum text-[.9rem] min-w-[1100px]">
+            <thead><tr className="border-b-2 border-ink">${['Year','Beginning balance','Interest earned','Regular','Riser special assessment','Boost','Total contributions','Project spending','Balance before extra','Minimum balance','Additional allocation','Ending balance','Total allocation','Rolling 4-yr spend'].map((h,i)=>html`<th key=${h} className=${'eyebrow py-2 px-2 font-bold '+(i?'text-right':'text-left')}>${h}</th>`)}</tr></thead>
+            <tbody>${m.rows.map(r=>html`<tr key=${r.y} className=${'border-b border-rule '+(r.alloc>0?'bg-badsoft':'')}>
+              <td className="py-1.5 px-2">${r.y}</td>
+              ${[r.begin,r.interest,r.reg,r.dom,r.boost,r.contrib,r.exp,r.before,r.minReq,r.alloc,r.end,r.totalAlloc,r.rolling].map((v,i)=>html`<td key=${i} className=${'py-1.5 px-2 text-right '+(v<0?'text-bad':'')+(i===10?' font-semibold':'')}>${money(v)}</td>`)}</tr>`)}
+              <tr className="border-t-2 border-ink font-semibold"><td className="py-2 px-2">Total</td><td></td>
+                ${[m.totalInterest,m.rows.reduce((a,r)=>a+r.reg,0),m.rows.reduce((a,r)=>a+r.dom,0),m.rows.reduce((a,r)=>a+r.boost,0),m.totalContrib,m.totalSpend].map((v,i)=>html`<td key=${i} className="py-2 px-2 text-right">${money(v)}</td>`)}
+                <td></td><td></td><td className="py-2 px-2 text-right">${money(m.totalAddl)}</td><td></td><td className="py-2 px-2 text-right">${money(m.totalContrib+m.totalAddl)}</td><td></td></tr>
+            </tbody></table></div>
+        </details>
+
+        <ul className="text-sm text-muted list-disc pl-5 flex flex-col gap-1 max-w-[100ch]">
+          <li>Project cost = base cost × (1 + construction cost increase) raised to (start year − cost basis year − 1), never less than 0. The start year itself is not escalated. Each phase = project cost ÷ phases, so every phase has the same cost.</li>
+          <li>Level annual allocation = (total project spend + final-year minimum balance − 2026 reserve balance − interest earned) ÷ number of years.</li>
+          <li>This is a planning tool for discussion. It is not a reserve study.</li>
+        </ul>
+      </main>
+    </div>
+  </div>`;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(html`<${App}/>`);
+</script>
+
+</body>
+</html>
